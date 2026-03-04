@@ -10,6 +10,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional, Union
 import logging
 import re
 from typing import List, Dict, Tuple, Set
@@ -798,7 +799,6 @@ class TeamsChartConverter:
             self.logger.error(f"Conversion failed: {e}", exc_info=True)
             raise
 
-
 def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str]:
     """
     Convenience function for converting Teams chat HTML to Excel.
@@ -814,15 +814,144 @@ def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str
     return converter.convert()
 
 
-if __name__ == "__main__":
-    # Example usage
-    import sys
-    
-    if len(sys.argv) > 1:
-        html_file = sys.argv[1]
-        excel_file, log_file = convert_teams_chat(html_file)
-        print(f"\nConversion complete!")
-        print(f"Excel: {excel_file}")
-        print(f"Log: {log_file}")
+def _iter_html_files(input_path: Union[str, Path], recursive: bool = False) -> list[Path]:
+    p = Path(input_path).expanduser().resolve()
+
+    if p.is_file():
+        if p.suffix.lower() != ".html":
+            raise ValueError(f"Input file is not .html: {p}")
+        return [p]
+
+    if p.is_dir():
+        pattern = "**/*.html" if recursive else "*.html"
+        files = sorted([f for f in p.glob(pattern) if f.is_file()])
+        if not files:
+            raise FileNotFoundError(f"No .html files found in folder: {p}")
+        return files
+
+    raise FileNotFoundError(f"Input path not found: {p}")
+
+
+def convert_teams_chat_folder(
+    folder_path: str,
+    output_dir: Optional[str] = None,
+    recursive: bool = False,
+    combine: bool = True,
+) -> Tuple[str, str]:
+    """
+    Convert a folder of Teams HTML exports.
+
+    If combine=True:
+      - parses each HTML
+      - concatenates all messages
+      - drops duplicates (by message_hash)
+      - sorts globally by timestamp
+      - writes ONE combined Excel
+
+    Returns: (excel_file, log_file) for the combined output.
+    """
+    html_files = _iter_html_files(folder_path, recursive=recursive)
+
+    master = TeamsChartConverter(str(html_files[0]), output_dir)
+    master.logger.info(f"Folder mode: {folder_path}")
+    master.logger.info(f"Found {len(html_files)} HTML files")
+
+    if not combine:
+        last_excel, last_log = "", ""
+        for f in html_files:
+            master.logger.info(f"Processing (separate): {f}")
+            last_excel, last_log = convert_teams_chat(str(f), output_dir=output_dir)
+        return last_excel, last_log
+
+    dfs = []
+    for f in html_files:
+        master.logger.info(f"Parsing: {f}")
+        c = TeamsChartConverter(str(f), output_dir)
+
+        df = c.parse_html()
+        if df.empty:
+            master.logger.warning(f"No messages extracted from: {f.name}")
+            continue
+
+        df = c.remove_duplicates(df)
+        df = c.check_timestamp_drift(df)
+
+        df["source_file"] = f.name
+        df["source_stem"] = f.stem
+
+        dfs.append(df)
+
+    if not dfs:
+        raise ValueError("No messages extracted from any HTML file in the folder.")
+
+    combined = pd.concat(dfs, ignore_index=True)
+
+    if "message_hash" in combined.columns:
+        before = len(combined)
+        combined = combined.drop_duplicates(subset=["message_hash"], keep="first")
+        removed = before - len(combined)
+        master.logger.info(f"Global duplicates removed: {removed}")
     else:
-        print("Usage: python teams_chat_converter.py <html_file>")
+        master.logger.warning("message_hash column missing; global dedupe skipped.")
+
+    sort_cols = [c for c in ["timestamp", "source_file", "index"] if c in combined.columns]
+    if sort_cols:
+        combined = combined.sort_values(sort_cols, kind="mergesort").reset_index(drop=True)
+
+    combined.insert(0, "global_sequence", range(1, len(combined) + 1))
+
+    out_dir = Path(output_dir).expanduser().resolve() if output_dir else Path(folder_path).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    combined_file = out_dir / f"teams_chats_combined_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    master.logger.info(f"Saving combined Excel: {combined_file}")
+
+    output_columns = [
+        "global_sequence",
+        "timestamp", "sender", "recipient", "message",
+        "url_count", "urls", "attachment_count", "attachments", "has_drift",
+        "source_file", "source_stem",
+    ]
+    output_columns = [c for c in output_columns if c in combined.columns]
+    export_df = combined[output_columns].copy()
+
+    if "timestamp" in export_df.columns and pd.api.types.is_datetime64_any_dtype(export_df["timestamp"]):
+        export_df["timestamp"] = export_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    with pd.ExcelWriter(combined_file, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="All Messages")
+
+        summary = pd.DataFrame(
+            [{"source_file": d["source_file"].iloc[0], "messages": len(d)} for d in dfs],
+            columns=["source_file", "messages"],
+        )
+        summary.to_excel(writer, index=False, sheet_name="Input Summary")
+
+    master.logger.info("Combined conversion completed successfully!")
+    return str(combined_file), str(master.log_file)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert Purview Teams HTML chat exports to Excel.")
+    parser.add_argument("input_path", help="Path to a .html file OR a folder containing .html files")
+    parser.add_argument("--output-dir", default=None, help="Output directory (defaults to input folder)")
+    parser.add_argument("--recursive", action="store_true", help="Recursively find .html files in subfolders")
+    parser.add_argument("--separate", action="store_true", help="Create one Excel per HTML (no combined file)")
+    args = parser.parse_args()
+
+    p = Path(args.input_path).expanduser().resolve()
+    if p.is_dir():
+        excel_file, log_file = convert_teams_chat_folder(
+            str(p),
+            output_dir=args.output_dir,
+            recursive=args.recursive,
+            combine=(not args.separate),
+        )
+    else:
+        excel_file, log_file = convert_teams_chat(str(p), output_dir=args.output_dir)
+
+    print("\nConversion complete!")
+    print(f"Excel: {excel_file}")
+    print(f"Log:   {log_file}")
