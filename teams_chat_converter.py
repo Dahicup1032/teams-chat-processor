@@ -4,6 +4,8 @@ Converts HTML Teams chat exports to Excel with deduplication, timestamp drift de
 URL extraction, and attachment tracking.
 """
 
+from pydoc import text
+
 import pandas as pd
 from bs4 import BeautifulSoup
 from pathlib import Path
@@ -113,6 +115,10 @@ class TeamsChartConverter:
             ('tr', {'class': 'message-row'}),
             ('div', {'data-type': 'message'}),
             ('div', {'class': re.compile('MessageCard|message-card', re.I)}),
+                
+            # NEW Purview format support
+            ('div', {'class': 'received-message'}),
+            ('div', {'class': re.compile('message--chat', re.I)}),
         ]
         
         for tag, attrs in selectors:
@@ -470,6 +476,26 @@ class TeamsChartConverter:
         
         return None
     
+    def _extract_message_text(self, element):
+        """Extract message text from element."""
+
+        message_patterns = [
+            ('div', {'class': re.compile('message-text|message_content|message_content-paragraph|message-content|msg-content|content|body|text', re.I)}),
+            ('p', {'class': re.compile('message-text|message_content|message_content-paragraph|message|msg|text', re.I)}),
+            ('span', {'class': re.compile('message-text|message_content|message_content-paragraph|message|msg|text', re.I)}),
+        ]
+
+        for tag, attrs in message_patterns:
+            msg_elem = element.find(tag, attrs)
+            if msg_elem:
+                text = msg_elem.get_text(strip=True)
+                if text:
+                    return text
+
+        # fallback
+        text = element.get_text(strip=True)
+        return text if text else None
+    
     def _parse_timestamp(self, time_str: str):
         """Parse timestamp string to datetime."""
         if not time_str:
@@ -503,26 +529,27 @@ class TeamsChartConverter:
     
     def _extract_sender(self, element):
         """Extract sender from element."""
+    
         sender_patterns = [
-            ('span', {'class': re.compile('sender|from|author|name', re.I)}),
-            ('div', {'class': re.compile('sender|from|author|name', re.I)}),
+            ('span', {'class': re.compile('message-sender|message_author|sender|from|author|name', re.I)}),
+            ('div', {'class': re.compile('message-sender|message_author|sender|from|author|name', re.I)}),
             ('strong', {}),
             ('b', {}),
         ]
-        
+
         for tag, attrs in sender_patterns:
             sender_elem = element.find(tag, attrs)
             if sender_elem:
                 sender = sender_elem.get_text(strip=True)
                 if sender and len(sender) > 0 and len(sender) < 100:
                     return sender
-        
+
         return 'Unknown'
     
     def _extract_recipient(self, element):
         """Extract recipient from element."""
         recipient_patterns = [
-            ('span', {'class': re.compile('recipient|to', re.I)}),
+            ('span', {'class': re.compile('message-recipient|message_to|recipient|to', re.I)}),
             ('div', {'class': re.compile('recipient|to', re.I)}),
         ]
         
@@ -532,27 +559,7 @@ class TeamsChartConverter:
                 return recipient_elem.get_text(strip=True)
         
         return 'Unknown'
-    
-    def _extract_message_text(self, element):
-        """Extract message text from element."""
-        # Try specific message content patterns
-        message_patterns = [
-            ('div', {'class': re.compile('message-content|msg-content|content|body|text', re.I)}),
-            ('p', {'class': re.compile('message|msg|text', re.I)}),
-            ('span', {'class': re.compile('message|msg|text', re.I)}),
-        ]
         
-        for tag, attrs in message_patterns:
-            msg_elem = element.find(tag, attrs)
-            if msg_elem:
-                text = msg_elem.get_text(strip=True)
-                if text and len(text) > 0:
-                    return text
-        
-        # Fallback: get all text from element
-        text = element.get_text(strip=True)
-        return text if text else None
-    
     def _generate_hash(self, timestamp, sender: str, message: str) -> str:
         """Generate hash for duplicate detection."""
         content = f"{timestamp}{sender}{message}".encode('utf-8')
