@@ -29,3 +29,9 @@ Thumbs.db
 
 # Test files
 test_*.html
+
+# Generated outputs from teams-chat-processor
+*_log_*.txt
+*_converted_*.xlsx
+teams_chats_combined_*.xlsx
+~$*.xlsx
