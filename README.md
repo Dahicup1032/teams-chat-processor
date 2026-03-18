@@ -1,41 +1,46 @@
-# Teams Chat Converter
+# Teams Chat Processor
 
-Convert Microsoft Teams chat exports from Purview HTML format to structured Excel spreadsheets with conversation threading, URL extraction, and attachment tracking.
+A Python tool for converting Microsoft Purview exported Teams chat HTML files into structured Excel spreadsheets.
+
+This tool supports:
+- Single-file conversion
+- Folder/batch conversion
+- GUI interface
+- CLI interface
+- Executable packaging
+- Extraction of conversation-level metadata and message-level chat content
+
+---
 
 ## Features
 
-- ✅ **HTML to Excel Conversion** - Parse Purview Teams chat exports into organized Excel files
-- ✅ **Duplicate Detection** - Automatically removes duplicate messages
-- ✅ **URL Extraction** - Identifies and extracts all URLs from messages
-- ✅ **Attachment Tracking** - Captures attachment names and references
-- ✅ **Timestamp Analysis** - Detects conversation gaps and timestamp drifts
-- ✅ **Conversation Threading** - Maintains chronological message order
-- ✅ **User-Friendly GUI** - Simple browse-and-convert interface
-- ✅ **Standalone Executable** - No Python installation required for end users
+- Converts Purview Teams HTML exports into Excel
+- Extracts conversation participants from `chat-data`
+- Extracts per-message:
+  - Message ID
+  - Sender
+  - Timestamp
+  - Message text
+- Preserves URLs found in message text
+- Detects attachments when present
+- Removes duplicate messages using message hash
+- Produces Excel output for review, filtering, and reporting
+- Creates a processing log file
+- Supports newer Purview message wrapper formats such as:
+  - `unknown-direction-message-wrapper`
+  - `message-sender`
+  - `message-date`
+  - `message-text`
 
-## Quick Start
+---
 
-### For End Users (Windows)
+## Supported HTML Structure
 
-1. Download `TeamsChartConverter.exe` from the [Releases](https://github.com/Dahicup1032/teams-chat-processor/releases) page
-2. Double-click the executable to launch the GUI
-3. Click **Browse** to select your Purview HTML export file
-4. Click **Convert to Excel**
-5. The Excel file will be created in the same folder as your input file
+The parser supports Purview HTML exports where:
 
-### For Developers
+- Conversation metadata appears first
+- Participants are stored in rows containing `td.chat-data`
+- Message blocks are wrapped in elements such as:
 
-#### Prerequisites
-
-- Python 3.8 or higher
-- pip (Python package manager)
-
-#### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/Dahicup1032/teams-chat-processor.git
-cd teams-chat-processor
-
-# Install dependencies
-pip install -r requirements.txt
+```html
+<label class="unknown-direction-message-wrapper" id="message339">
