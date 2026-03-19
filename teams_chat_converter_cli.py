@@ -3,19 +3,22 @@
 CLI runner for Teams Chat Converter.
 
 Purpose:
-- Provide a manual/command-line way to run conversions against test Purview Teams HTML exports,
-  using the same conversion pipeline the GUI/executable uses:
-    parse_html -> remove_duplicates -> check_timestamp_drift -> save_to_excel
+- Run conversions on Purview Teams HTML exports using:
+  parse_html -> remove_duplicates -> check_timestamp_drift -> save_to_excel
+
+Supports:
+- Single HTML file
+- Folder of HTML files
+- Recursive folder processing
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import List, Tuple
 
-# ✅ FIXED CLASS NAME
+# ✅ Correct class import
 try:
     from teams_chat_converter import TeamsChatConverter
 except ImportError:  # pragma: no cover
@@ -23,14 +26,19 @@ except ImportError:  # pragma: no cover
     TeamsChatConverter = teams_chat_converter.TeamsChatConverter  # type: ignore
 
 
+# ---------------------------------------------------------
+# FILE DISCOVERY
+# ---------------------------------------------------------
 def iter_html_files(input_path: Path, recursive: bool) -> List[Path]:
     """Return list of HTML files from file or folder input."""
+
+    # Single file mode
     if input_path.is_file():
-        # ✅ Ensure it's actually an HTML file
         if input_path.suffix.lower() in {".html", ".htm"}:
             return [input_path]
         return []
 
+    # Folder mode
     patterns = ["*.html", "*.htm"]
     files: List[Path] = []
 
@@ -40,10 +48,13 @@ def iter_html_files(input_path: Path, recursive: bool) -> List[Path]:
         else:
             files.extend(input_path.glob(pat))
 
-    # Deduplicate and sort
+    # Deduplicate + sort
     return sorted({p.resolve() for p in files})
 
 
+# ---------------------------------------------------------
+# SINGLE FILE CONVERSION
+# ---------------------------------------------------------
 def convert_one(html_file: Path, output_dir: Path | None, quiet: bool) -> Tuple[bool, str]:
     """Convert one HTML file to Excel."""
     try:
@@ -57,7 +68,7 @@ def convert_one(html_file: Path, output_dir: Path | None, quiet: bool) -> Tuple[
 
         df = converter.parse_html()
 
-        # ✅ KEEP FULL PIPELINE
+        # ✅ Full processing pipeline
         df = converter.remove_duplicates(df)
         df = converter.check_timestamp_drift(df)
 
@@ -90,6 +101,9 @@ def convert_one(html_file: Path, output_dir: Path | None, quiet: bool) -> Tuple[
         return False, msg
 
 
+# ---------------------------------------------------------
+# MAIN CLI ENTRY
+# ---------------------------------------------------------
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="teams_chat_converter_cli",
@@ -171,5 +185,16 @@ def main(argv: List[str] | None = None) -> int:
     return 0 if not failures else 2
 
 
+# ---------------------------------------------------------
+# OPTIONAL JUPYTER ENTRY
+# ---------------------------------------------------------
+def run():
+    """Allow CLI to be run from Jupyter or imports."""
+    return main()
+
+
+# ---------------------------------------------------------
+# SCRIPT ENTRY
+# ---------------------------------------------------------
 if __name__ == "__main__":
     raise SystemExit(main())
