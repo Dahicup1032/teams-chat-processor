@@ -4,13 +4,13 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import hashlib
 from urllib.parse import urlparse, unquote
 
 
 class TeamsChatConverter:
-    """Convert Purview Teams HTML chat exports to Excel-friendly structured data."""
+    """Convert Microsoft Purview Teams HTML chat exports into structured Excel output."""
 
     def __init__(self, html_file: str, output_dir: str = None):
         self.html_file = Path(html_file)
@@ -25,7 +25,6 @@ class TeamsChatConverter:
             "duplicates_removed": 0,
             "timestamp_drifts": 0,
             "errors": 0,
-            "processing_time": 0,
             "urls_extracted": 0,
             "attachments_found": 0,
             "messages_with_urls": 0,
@@ -33,18 +32,23 @@ class TeamsChatConverter:
         }
 
     def _setup_logging(self):
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(message)s",
-            handlers=[
-                logging.FileHandler(self.log_file, encoding="utf-8"),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(f"TeamsChatConverter_{self.html_file.stem}_{id(self)}")
+        self.logger.setLevel(logging.INFO)
+        self.logger.handlers.clear()
+
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+        file_handler = logging.FileHandler(self.log_file, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(stream_handler)
 
     def parse_html(self) -> pd.DataFrame:
-        """Parse HTML file and extract structured Teams chat messages."""
+        """Parse HTML file and extract structured Teams chat data."""
         self.logger.info(f"Parsing HTML file: {self.html_file}")
 
         try:
@@ -76,15 +80,15 @@ class TeamsChatConverter:
 
     def _extract_chat_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
         """
-        Extract conversation-level metadata from the top chat-data table.
-        Expected patterns include rows like:
-        CHAT PARTICIPANTS
-        DISPLAY NAMES
-        LOCAL PARTICIPANT
-        NUMBER OF MESSAGES
-        FIRST MESSAGE SENT
-        LAST MESSAGE SENT
-        CASE TIME ZONE
+        Extract conversation-level metadata from rows containing td.chat-data.
+        Supports fields like:
+        - CHAT PARTICIPANTS
+        - DISPLAY NAMES
+        - LOCAL PARTICIPANT
+        - NUMBER OF MESSAGES
+        - FIRST MESSAGE SENT
+        - LAST MESSAGE SENT
+        - CASE TIME ZONE
         """
         metadata = {
             "conversation_participants": "",
@@ -105,34 +109,26 @@ class TeamsChatConverter:
                     continue
 
                 key = header.get_text(" ", strip=True).lower()
-
-                # collect all chat-data cells in this row
                 cells = row.find_all("td", class_="chat-data")
-                cell_values = [c.get_text(" ", strip=True) for c in cells if c.get_text(" ", strip=True)]
+                values = [c.get_text(" ", strip=True) for c in cells if c.get_text(" ", strip=True)]
 
-                if not cell_values:
+                if not values:
                     continue
 
                 if "display names" in key:
-                    metadata["conversation_participants"] = "; ".join(cell_values)
-
+                    metadata["conversation_participants"] = "; ".join(values)
                 elif "chat participants" in key and "display" not in key:
-                    metadata["participant_count"] = cell_values[0]
-
+                    metadata["participant_count"] = values[0]
                 elif "local participant" in key:
-                    metadata["local_user"] = cell_values[0]
-
+                    metadata["local_user"] = values[0]
                 elif "number of messages" in key:
-                    metadata["message_count"] = cell_values[0]
-
+                    metadata["message_count"] = values[0]
                 elif "first message" in key:
-                    metadata["conversation_first_timestamp"] = cell_values[0]
-
+                    metadata["conversation_first_timestamp"] = values[0]
                 elif "last message" in key:
-                    metadata["conversation_last_timestamp"] = cell_values[0]
-
+                    metadata["conversation_last_timestamp"] = values[0]
                 elif "time zone" in key:
-                    metadata["case_time_zone"] = cell_values[0]
+                    metadata["case_time_zone"] = values[0]
 
         except Exception as e:
             self.logger.warning(f"Metadata extraction failed: {e}")
@@ -142,7 +138,7 @@ class TeamsChatConverter:
     def _find_message_elements(self, soup: BeautifulSoup):
         """
         Find message wrapper elements.
-        Prioritizes the new Purview format first.
+        Prioritizes the newer Purview format first.
         """
         selectors = [
             ("label", {"class": "unknown-direction-message-wrapper"}),
@@ -160,22 +156,22 @@ class TeamsChatConverter:
                 self.logger.info(f"Found {len(elements)} messages using selector: {tag} {attrs}")
                 return elements
 
-        elements = soup.find_all(
+        fallback_elements = soup.find_all(
             lambda t: t.name in ["div", "label"] and (
                 (t.get("class") and any(re.search(r"message|msg|chat", c, re.I) for c in t.get("class", [])))
                 or (t.get("id") and re.search(r"message\d+", t.get("id", ""), re.I))
             )
         )
 
-        if elements:
-            self.logger.info(f"Found {len(elements)} messages using fallback pattern")
-            return elements
+        if fallback_elements:
+            self.logger.info(f"Found {len(fallback_elements)} messages using fallback pattern")
+            return fallback_elements
 
         self.logger.warning("No messages found with standard selectors")
         return []
 
     def _extract_message_data(self, element, index: int, chat_metadata: Dict[str, str]) -> Optional[Dict]:
-        """Extract a single message row."""
+        """Extract one message row."""
         message_id = self._extract_message_id(element)
         timestamp = self._extract_timestamp(element)
         sender = self._extract_sender(element)
@@ -192,44 +188,38 @@ class TeamsChatConverter:
             self.stats["attachments_found"] += len(attachments)
             self.stats["messages_with_attachments"] += 1
 
-        # keep row if there is actual message content
-        if message:
-            return {
-                "msg_index": index,
-                "message_id": message_id,
-                "timestamp": timestamp,
-                "sender": sender,
-                "message": message,
-                "conversation_participants": chat_metadata.get("conversation_participants", ""),
-                "participant_count": chat_metadata.get("participant_count", ""),
-                "local_user": chat_metadata.get("local_user", ""),
-                "message_count": chat_metadata.get("message_count", ""),
-                "conversation_first_timestamp": chat_metadata.get("conversation_first_timestamp", ""),
-                "conversation_last_timestamp": chat_metadata.get("conversation_last_timestamp", ""),
-                "case_time_zone": chat_metadata.get("case_time_zone", ""),
-                "source_file": str(self.html_file.name),
-                "urls": self._format_urls_list(urls),
-                "url_count": len(urls),
-                "attachments": self._format_attachments_list(attachments),
-                "attachment_count": len(attachments),
-                "has_urls": len(urls) > 0,
-                "has_attachments": len(attachments) > 0,
-                "message_hash": self._generate_hash(
-                    message_id=message_id,
-                    timestamp=timestamp,
-                    sender=sender,
-                    message=message
-                )
-            }
+        if not any([message, sender, timestamp, message_id]):
+            return None
 
-        return None
+        return {
+            "msg_index": index,
+            "message_id": message_id,
+            "timestamp": timestamp,
+            "sender": sender,
+            "message": message,
+            "conversation_participants": chat_metadata.get("conversation_participants", ""),
+            "participant_count": chat_metadata.get("participant_count", ""),
+            "local_user": chat_metadata.get("local_user", ""),
+            "message_count": chat_metadata.get("message_count", ""),
+            "conversation_first_timestamp": chat_metadata.get("conversation_first_timestamp", ""),
+            "conversation_last_timestamp": chat_metadata.get("conversation_last_timestamp", ""),
+            "case_time_zone": chat_metadata.get("case_time_zone", ""),
+            "source_file": str(self.html_file.name),
+            "urls": self._format_urls_list(urls),
+            "url_count": len(urls),
+            "attachments": self._format_attachments_list(attachments),
+            "attachment_count": len(attachments),
+            "has_urls": len(urls) > 0,
+            "has_attachments": len(attachments) > 0,
+            "message_hash": self._generate_hash(message_id, timestamp, sender, message)
+        }
 
     def _extract_message_id(self, element) -> str:
         """
-        Extract message ID.
-        Expected real-world pattern:
-            id="message339"  -> returns "339"
-        Falls back to full id string if the pattern changes.
+        Extract numeric message ID from id values like:
+        id="message339" -> 339
+
+        Nothing is hardcoded. Any numeric sequence after 'message' is extracted.
         """
         candidates = [element]
 
@@ -253,23 +243,22 @@ class TeamsChatConverter:
 
     def _extract_timestamp(self, element) -> str:
         """Extract timestamp from new and legacy patterns."""
-        # explicit new format first
         date_elem = element.find(class_="message-date")
         if date_elem:
             return date_elem.get_text(" ", strip=True)
 
-        time_patterns = [
+        patterns = [
             ("time", {}),
             ("span", {"class": re.compile(r"time|date|timestamp", re.I)}),
             ("div", {"class": re.compile(r"time|date|timestamp", re.I)}),
         ]
 
-        for tag, attrs in time_patterns:
-            time_elem = element.find(tag, attrs)
-            if time_elem:
-                time_text = time_elem.get_text(" ", strip=True)
-                if time_text:
-                    return time_text
+        for tag, attrs in patterns:
+            found = element.find(tag, attrs)
+            if found:
+                text = found.get_text(" ", strip=True)
+                if text:
+                    return text
 
         for attr in ["datetime", "data-timestamp", "data-time"]:
             if element.get(attr):
@@ -285,41 +274,41 @@ class TeamsChatConverter:
             if sender:
                 return sender
 
-        sender_patterns = [
+        patterns = [
             ("span", {"class": re.compile(r"sender|from|author|name", re.I)}),
             ("div", {"class": re.compile(r"sender|from|author|name", re.I)}),
             ("strong", {}),
             ("b", {}),
         ]
 
-        for tag, attrs in sender_patterns:
-            sender_elem = element.find(tag, attrs)
-            if sender_elem:
-                sender = sender_elem.get_text(" ", strip=True)
-                if sender and len(sender) < 200:
-                    return sender
+        for tag, attrs in patterns:
+            found = element.find(tag, attrs)
+            if found:
+                text = found.get_text(" ", strip=True)
+                if text and len(text) < 200:
+                    return text
 
         return "Unknown"
 
     def _extract_message_text(self, element) -> str:
         """
         Extract full visible message text.
-        The new format uses message-text and may include URLs inline.
+        message-text may include normal text and inline URLs.
         """
         text_elem = element.find(class_="message-text")
         if text_elem:
             return text_elem.get_text(" ", strip=True)
 
-        message_patterns = [
+        patterns = [
             ("div", {"class": re.compile(r"message-content|msg-content|content|body|text", re.I)}),
             ("p", {"class": re.compile(r"message|msg|text", re.I)}),
             ("span", {"class": re.compile(r"message|msg|text", re.I)}),
         ]
 
-        for tag, attrs in message_patterns:
-            msg_elem = element.find(tag, attrs)
-            if msg_elem:
-                text = msg_elem.get_text(" ", strip=True)
+        for tag, attrs in patterns:
+            found = element.find(tag, attrs)
+            if found:
+                text = found.get_text(" ", strip=True)
                 if text:
                     return text
 
@@ -329,15 +318,14 @@ class TeamsChatConverter:
     def _extract_urls(self, element) -> List[Dict]:
         """Extract URLs from anchor tags and raw text."""
         urls = []
-        seen_urls = set()
+        seen = set()
 
         for link in element.find_all("a", href=True):
             url = link.get("href", "").strip()
             display_text = link.get_text(" ", strip=True)
 
-            if not url or url in seen_urls:
+            if not url or url in seen:
                 continue
-
             if url.startswith(("javascript:", "mailto:", "#", "tel:")):
                 continue
 
@@ -346,20 +334,20 @@ class TeamsChatConverter:
                 "text": display_text if display_text else url,
                 "type": self._classify_url(url)
             })
-            seen_urls.add(url)
+            seen.add(url)
 
         text_content = element.get_text(" ", strip=True)
         url_pattern = r"http[s]?://(?:[a-zA-Z0-9$\-_.+!*'(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
 
         for match in re.finditer(url_pattern, text_content):
             url = match.group(0)
-            if url not in seen_urls:
+            if url not in seen:
                 urls.append({
                     "url": url,
                     "text": url,
                     "type": self._classify_url(url)
                 })
-                seen_urls.add(url)
+                seen.add(url)
 
         return urls
 
@@ -371,37 +359,38 @@ class TeamsChatConverter:
 
             if "sharepoint.com" in domain or "sharepoint." in domain:
                 return "SharePoint"
-            elif "teams.microsoft.com" in domain or "teams.live.com" in domain:
+            if "teams.microsoft.com" in domain or "teams.live.com" in domain:
                 return "Teams"
-            elif "onedrive" in domain:
+            if "onedrive" in domain:
                 return "OneDrive"
-            elif any(d in domain for d in ["dropbox.com", "box.com", "drive.google.com"]):
+            if any(d in domain for d in ["dropbox.com", "box.com", "drive.google.com"]):
                 return "File Sharing"
-            elif any(d in domain for d in ["zoom.us", "meet.google.com", "webex.com"]):
+            if any(d in domain for d in ["zoom.us", "meet.google.com", "webex.com"]):
                 return "Meeting"
-            elif any(path.endswith(ext) for ext in [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]):
+            if any(path.endswith(ext) for ext in [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]):
                 return "Document"
-            elif any(path.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3"]):
+            if any(path.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3"]):
                 return "Media"
             return "Web"
         except Exception:
             return "Unknown"
 
     def _extract_attachments(self, element) -> List[Dict]:
+        """Extract attachment-like elements."""
         attachments = []
 
-        attachment_patterns = [
+        patterns = [
             ("div", {"class": re.compile(r"attachment|file|document", re.I)}),
             ("span", {"class": re.compile(r"attachment|file|document", re.I)}),
             ("a", {"class": re.compile(r"attachment|file|document", re.I)}),
             ("li", {"class": re.compile(r"attachment|file|document", re.I)}),
         ]
 
-        for tag, attrs in attachment_patterns:
-            for att_elem in element.find_all(tag, attrs):
-                attachment_info = self._parse_attachment_element(att_elem)
-                if attachment_info and attachment_info not in attachments:
-                    attachments.append(attachment_info)
+        for tag, attrs in patterns:
+            for found in element.find_all(tag, attrs):
+                att = self._parse_attachment_element(found)
+                if att and att not in attachments:
+                    attachments.append(att)
 
         for link in element.find_all("a", href=True):
             href = link.get("href", "")
@@ -409,23 +398,24 @@ class TeamsChatConverter:
                 "download" in href.lower()
                 or any(ext in href.lower() for ext in [
                     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-                    ".zip", ".rar", ".txt", ".csv", ".jpg", ".png", ".gif", ".mp4"
+                    ".zip", ".rar", ".7z", ".txt", ".csv", ".jpg", ".jpeg", ".png", ".gif", ".mp4"
                 ])
             ):
-                attachment_info = {
+                att = {
                     "filename": self._extract_filename_from_url(href),
                     "url": href,
                     "size": "Unknown",
                     "type": self._get_file_type(href)
                 }
-                if attachment_info not in attachments:
-                    attachments.append(attachment_info)
+                if att not in attachments:
+                    attachments.append(att)
 
         return attachments
 
     def _parse_attachment_element(self, element) -> Optional[Dict]:
         try:
             filename = None
+
             for attr in ["title", "data-filename", "data-file", "aria-label"]:
                 if element.get(attr):
                     filename = element.get(attr)
@@ -494,58 +484,122 @@ class TeamsChatConverter:
         if not urls:
             return ""
 
-        formatted = []
-        for idx, url_info in enumerate(urls, 1):
+        lines = []
+        for i, url_info in enumerate(urls, start=1):
             url = url_info["url"]
             text = url_info.get("text", url)
             url_type = url_info.get("type", "Web")
-            formatted.append(f"[{idx}] {text} ({url_type}): {url}")
-        return "\n".join(formatted)
+            lines.append(f"[{i}] {text} ({url_type}): {url}")
+        return "\n".join(lines)
 
     def _format_attachments_list(self, attachments: List[Dict]) -> str:
         if not attachments:
             return ""
 
-        formatted = []
-        for idx, att in enumerate(attachments, 1):
+        lines = []
+        for i, att in enumerate(attachments, start=1):
             filename = att.get("filename", "Unknown")
             file_type = att.get("type", "Unknown")
             size = att.get("size", "Unknown")
             url = att.get("url", "")
 
-            line = f"[{idx}] {filename} ({file_type}, {size})"
+            line = f"[{i}] {filename} ({file_type}, {size})"
             if url:
                 line += f" - {url}"
-            formatted.append(line)
+            lines.append(line)
 
-        return "\n".join(formatted)
+        return "\n".join(lines)
 
     def _generate_hash(self, message_id: str, timestamp: str, sender: str, message: str) -> str:
-        """
-        Include message_id in the hash when present.
-        This improves dedupe and traceability.
-        """
         content = f"{message_id}|{timestamp}|{sender}|{message}".encode("utf-8")
         return hashlib.md5(content).hexdigest()
 
     def remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove duplicate messages using message_hash."""
         self.logger.info("Checking for duplicates...")
+        if df.empty or "message_hash" not in df.columns:
+            return df
+
         initial_count = len(df)
         df = df.drop_duplicates(subset=["message_hash"], keep="first")
         final_count = len(df)
 
-        duplicates = initial_count - final_count
-        self.stats["duplicates_removed"] = duplicates
+        removed = initial_count - final_count
+        self.stats["duplicates_removed"] = removed
 
-        if duplicates > 0:
-            self.logger.info(f"Removed {duplicates} duplicate messages")
+        if removed > 0:
+            self.logger.info(f"Removed {removed} duplicate messages")
         else:
-            self.logger.info("No duplicates found")
+            self.logger.info("No duplicate messages found")
 
         return df.reset_index(drop=True)
 
+    def check_timestamp_drift(self, df: pd.DataFrame, threshold_seconds: int = 300) -> pd.DataFrame:
+        """
+        Check for possible timestamp drift.
+
+        Flags:
+        - unparseable timestamps
+        - backward time movement
+        - unusually large forward jumps beyond threshold_seconds
+        """
+        self.logger.info("Checking timestamp drift...")
+
+        if df.empty:
+            df["parsed_timestamp"] = pd.NaT
+            df["timestamp_drift_flag"] = False
+            df["timestamp_drift_detail"] = ""
+            df["timestamp_drift_seconds"] = ""
+            return df
+
+        df = df.copy()
+        df["parsed_timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp_drift_flag"] = False
+        df["timestamp_drift_detail"] = ""
+        df["timestamp_drift_seconds"] = ""
+
+        previous_ts = None
+
+        for idx in df.index:
+            current_ts = df.at[idx, "parsed_timestamp"]
+            raw_ts = df.at[idx, "timestamp"] if "timestamp" in df.columns else ""
+
+            if pd.isna(current_ts):
+                df.at[idx, "timestamp_drift_flag"] = True
+                df.at[idx, "timestamp_drift_detail"] = "Unparseable timestamp"
+                df.at[idx, "timestamp_drift_seconds"] = ""
+                self.stats["timestamp_drifts"] += 1
+                self.logger.warning(f"Row {idx}: unparseable timestamp -> {raw_ts}")
+                continue
+
+            if previous_ts is not None:
+                delta = (current_ts - previous_ts).total_seconds()
+
+                if delta < 0:
+                    df.at[idx, "timestamp_drift_flag"] = True
+                    df.at[idx, "timestamp_drift_detail"] = f"Time moved backward by {abs(int(delta))} seconds"
+                    df.at[idx, "timestamp_drift_seconds"] = int(delta)
+                    self.stats["timestamp_drifts"] += 1
+                    self.logger.warning(
+                        f"Row {idx}: timestamp moved backward. previous={previous_ts}, current={current_ts}, delta={int(delta)}"
+                    )
+
+                elif delta > threshold_seconds:
+                    df.at[idx, "timestamp_drift_flag"] = True
+                    df.at[idx, "timestamp_drift_detail"] = f"Forward jump greater than threshold ({int(delta)} seconds)"
+                    df.at[idx, "timestamp_drift_seconds"] = int(delta)
+                    self.stats["timestamp_drifts"] += 1
+                    self.logger.warning(
+                        f"Row {idx}: large timestamp jump. previous={previous_ts}, current={current_ts}, delta={int(delta)}"
+                    )
+
+            previous_ts = current_ts
+
+        self.logger.info(f"Timestamp drift check complete. Detected {self.stats['timestamp_drifts']} drift issues.")
+        return df
+
     def save_to_excel(self, df: pd.DataFrame, output_file: str = None) -> Path:
-        """Save extracted messages to Excel."""
+        """Save parsed messages to Excel."""
         if output_file:
             output_path = Path(output_file)
         else:
@@ -555,6 +609,10 @@ class TeamsChatConverter:
             "msg_index",
             "message_id",
             "timestamp",
+            "parsed_timestamp",
+            "timestamp_drift_flag",
+            "timestamp_drift_detail",
+            "timestamp_drift_seconds",
             "sender",
             "message",
             "conversation_participants",
@@ -584,10 +642,12 @@ class TeamsChatConverter:
                 {"Metric": "Source File", "Value": self.html_file.name},
                 {"Metric": "Total Messages", "Value": self.stats["total_messages"]},
                 {"Metric": "Duplicates Removed", "Value": self.stats["duplicates_removed"]},
+                {"Metric": "Timestamp Drifts", "Value": self.stats["timestamp_drifts"]},
                 {"Metric": "URLs Extracted", "Value": self.stats["urls_extracted"]},
                 {"Metric": "Attachments Found", "Value": self.stats["attachments_found"]},
                 {"Metric": "Messages With URLs", "Value": self.stats["messages_with_urls"]},
                 {"Metric": "Messages With Attachments", "Value": self.stats["messages_with_attachments"]},
+                {"Metric": "Errors", "Value": self.stats["errors"]},
             ])
             summary.to_excel(writer, index=False, sheet_name="Summary")
 
@@ -595,19 +655,22 @@ class TeamsChatConverter:
         return output_path
 
 
-def convert_teams_chat(html_file: str, output_dir: str = None) -> tuple[str, str]:
+def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str]:
     """
     Convert a Teams HTML export to Excel.
+
     Returns:
         (excel_output_path, log_output_path)
     """
     converter = TeamsChatConverter(html_file, output_dir=output_dir)
+
     df = converter.parse_html()
 
     if df.empty:
         raise ValueError("No messages were extracted from the HTML file.")
 
     df = converter.remove_duplicates(df)
+    df = converter.check_timestamp_drift(df)
     excel_path = converter.save_to_excel(df)
 
     return str(excel_path), str(converter.log_file)
