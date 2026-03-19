@@ -674,3 +674,7 @@ def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str
     excel_path = converter.save_to_excel(df)
 
     return str(excel_path), str(converter.log_file)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
