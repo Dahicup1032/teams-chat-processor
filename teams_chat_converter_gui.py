@@ -257,9 +257,11 @@ class ConverterGUI:
 
         thread = threading.Thread(target=self.run_conversion, daemon=True)
         thread.start()
-
+   
     def run_conversion(self):
         try:
+            import pandas as pd
+
             input_path = self.selected_path
             output_dir = self.output_dir
 
@@ -279,7 +281,9 @@ class ConverterGUI:
             results = []
             failures = []
 
-            for html_file in html_files:
+            # SINGLE FILE MODE = keep existing one-file behavior
+            if self.mode_var.get() == "file":
+                html_file = html_files[0]
                 try:
                     effective_output = output_dir if output_dir else html_file.parent
                     converter = TeamsChatConverter(str(html_file), str(effective_output))
@@ -312,6 +316,69 @@ class ConverterGUI:
                     failures.append(msg)
                     self.log_message(f"ERROR: {msg}")
 
+            # FOLDER MODE = combine all HTMLs into one Excel
+            else:
+                all_dfs = []
+                total_dupes = 0
+                total_drifts = 0
+                total_urls = 0
+                total_attachments = 0
+
+                effective_output = output_dir if output_dir else input_path
+
+                for html_file in html_files:
+                    try:
+                        converter = TeamsChatConverter(str(html_file), str(effective_output))
+
+                        self.log_message(f"\n--- Processing: {html_file.name} ---")
+                        self.log_message("Parsing HTML...")
+                        df = converter.parse_html()
+                        self.log_message(f"✓ Extracted {len(df)} message rows")
+
+                        self.log_message("Checking for duplicates...")
+                        df = converter.remove_duplicates(df)
+                        self.log_message(f"✓ Removed {converter.stats['duplicates_removed']} duplicates")
+
+                        self.log_message("Checking timestamp drift...")
+                        df = converter.check_timestamp_drift(df)
+                        self.log_message(f"✓ Detected {converter.stats['timestamp_drifts']} timestamp drifts")
+
+                        all_dfs.append(df)
+
+                        total_dupes += converter.stats.get("duplicates_removed", 0)
+                        total_drifts += converter.stats.get("timestamp_drifts", 0)
+                        total_urls += converter.stats.get("urls_extracted", 0)
+                        total_attachments += converter.stats.get("attachments_found", 0)
+
+                    except Exception as e:
+                        msg = f"{html_file.name}: {e}"
+                        failures.append(msg)
+                        self.log_message(f"ERROR: {msg}")
+
+                if all_dfs:
+                    self.log_message("\nCombining all parsed rows into one Excel file...")
+                    combined_df = pd.concat(all_dfs, ignore_index=True)
+
+                    combined_name = "combined_teams_chat_output.xlsx"
+                    combined_path = Path(effective_output) / combined_name
+
+                    with pd.ExcelWriter(combined_path, engine="openpyxl") as writer:
+                        combined_df.to_excel(writer, index=False, sheet_name="Messages")
+
+                        summary_df = pd.DataFrame([
+                            {"Metric": "Source Folder", "Value": str(input_path)},
+                            {"Metric": "Files Processed", "Value": len(all_dfs)},
+                            {"Metric": "Combined Rows", "Value": len(combined_df)},
+                            {"Metric": "Duplicates Removed", "Value": total_dupes},
+                            {"Metric": "Timestamp Drifts", "Value": total_drifts},
+                            {"Metric": "URLs Extracted", "Value": total_urls},
+                            {"Metric": "Attachments Found", "Value": total_attachments},
+                        ])
+                        summary_df.to_excel(writer, index=False, sheet_name="Summary")
+
+                    self.log_message(f"✓ Combined Excel file created: {combined_path.name}")
+                    results.append(str(combined_path))
+
             self.log_message("\n" + "=" * 70)
             self.log_message("CONVERSION COMPLETE")
             self.log_message(f"Successful: {len(results)}")
@@ -332,7 +399,7 @@ class ConverterGUI:
             self.root.after(0, lambda: messagebox.showerror("Conversion Failed", error_msg))
         finally:
             self.root.after(0, self.reset_ui)
-
+    
     def show_completion_dialog(self, results, failures):
         if results and not failures:
             message = (
