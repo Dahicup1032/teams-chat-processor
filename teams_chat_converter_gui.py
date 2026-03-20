@@ -20,7 +20,7 @@ class ConverterGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Teams Chat Converter")
-        self.root.geometry("820x620")
+        self.root.geometry("860x650")
         self.root.resizable(True, True)
 
         self.selected_path: Path | None = None
@@ -45,12 +45,12 @@ class ConverterGUI:
             self.root,
             text=(
                 "Select either a single Purview HTML export file or a folder of HTML files. "
-                "The converter will extract message IDs, participants, timestamps, text, "
-                "URLs, attachments, and timestamp drift results."
+                "The converter extracts message IDs, sender, timestamps, message text, "
+                "conversation participants, URLs, attachments, and timestamp drift results."
             ),
             font=("Arial", 10),
             pady=5,
-            wraplength=760,
+            wraplength=800,
             justify="center",
         )
         instruction_label.pack()
@@ -94,7 +94,7 @@ class ConverterGUI:
             bd=2,
             bg="#f0f0f0",
             fg="#666666",
-            wraplength=760,
+            wraplength=800,
             padx=10,
             pady=12,
         )
