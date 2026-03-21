@@ -196,6 +196,7 @@ class TeamsChatConverter:
             "message_id": message_id,
             "timestamp": timestamp,
             "sender": sender,
+            "recipient": chat_metadata.get("conversation_participants", ""),
             "message": message,
             "conversation_participants": chat_metadata.get("conversation_participants", ""),
             "participant_count": chat_metadata.get("participant_count", ""),
@@ -614,6 +615,7 @@ class TeamsChatConverter:
             "timestamp_drift_detail",
             "timestamp_drift_seconds",
             "sender",
+            "recipient",
             "message",
             "conversation_participants",
             "participant_count",
@@ -674,7 +676,4 @@ def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str
     excel_path = converter.save_to_excel(df)
 
     return str(excel_path), str(converter.log_file)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    
