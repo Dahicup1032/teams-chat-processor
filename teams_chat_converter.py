@@ -78,63 +78,87 @@ class TeamsChatConverter:
 
         return pd.DataFrame(messages)
 
-    def _extract_chat_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
-        """
-        Extract conversation-level metadata from rows containing td.chat-data.
-        Supports fields like:
-        - CHAT PARTICIPANTS
-        - DISPLAY NAMES
-        - LOCAL PARTICIPANT
-        - NUMBER OF MESSAGES
-        - FIRST MESSAGE SENT
-        - LAST MESSAGE SENT
-        - CASE TIME ZONE
-        """
-        metadata = {
-            "conversation_participants": "",
-            "participant_count": "",
-            "local_user": "",
-            "message_count": "",
-            "conversation_first_timestamp": "",
-            "conversation_last_timestamp": "",
-            "case_time_zone": ""
-        }
+   def _extract_chat_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
+    """
+    Extract conversation-level metadata from Purview chat-data table.
+    Supports:
+    - td.chat-header
+    - td.chat-label
+    - td.chat-data
+    - nested div.chat-data entries under Display names
+    """
+    metadata = {
+        "conversation_participants": "",
+        "participant_count": "",
+        "local_user": "",
+        "message_count": "",
+        "conversation_first_timestamp": "",
+        "conversation_last_timestamp": "",
+        "case_time_zone": ""
+    }
 
-        try:
-            rows = soup.find_all("tr")
+    try:
+        rows = soup.find_all("tr")
 
-            for row in rows:
-                header = row.find("th")
-                if not header:
-                    continue
+        for row in rows:
+            # In your export, labels are td.chat-label or td.chat-header, not <th>
+            label_cell = row.find("td", class_=re.compile(r"chat-label|chat-header", re.I))
+            if not label_cell:
+                continue
 
-                key = header.get_text(" ", strip=True).lower()
-                cells = row.find_all("td", class_="chat-data")
-                values = [c.get_text(" ", strip=True) for c in cells if c.get_text(" ", strip=True)]
+            key = label_cell.get_text(" ", strip=True).lower()
 
-                if not values:
-                    continue
+            # direct chat-data cells in the row
+            data_cells = row.find_all("td", class_="chat-data")
+            if not data_cells:
+                continue
 
-                if "display names" in key:
+            # Special handling for Display names because names are nested div.chat-data blocks
+            if "display names" in key:
+                nested_names = data_cells[0].find_all("div", class_="chat-data")
+                if nested_names:
+                    values = [n.get_text(" ", strip=True) for n in nested_names if n.get_text(" ", strip=True)]
+                else:
+                    values = [data_cells[0].get_text(" ", strip=True)] if data_cells[0].get_text(" ", strip=True) else []
+
+                if values:
                     metadata["conversation_participants"] = "; ".join(values)
-                elif "chat participants" in key and "display" not in key:
-                    metadata["participant_count"] = values[0]
-                elif "local participant" in key:
-                    metadata["local_user"] = values[0]
-                elif "number of messages" in key:
-                    metadata["message_count"] = values[0]
-                elif "first message" in key:
-                    metadata["conversation_first_timestamp"] = values[0]
-                elif "last message" in key:
-                    metadata["conversation_last_timestamp"] = values[0]
-                elif "time zone" in key:
-                    metadata["case_time_zone"] = values[0]
 
-        except Exception as e:
-            self.logger.warning(f"Metadata extraction failed: {e}")
+            elif "number of participants" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["participant_count"] = value
 
-        return metadata
+            elif "local user" in key or "local participant" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["local_user"] = value
 
+            elif "number of messages" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["message_count"] = value
+
+            elif "first message sent" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["conversation_first_timestamp"] = value
+
+            elif "last message sent" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["conversation_last_timestamp"] = value
+
+            elif "case time zone" in key or "case time zone" in key:
+                value = data_cells[0].get_text(" ", strip=True)
+                if value:
+                    metadata["case_time_zone"] = value
+
+    except Exception as e:
+        self.logger.warning(f"Metadata extraction failed: {e}")
+
+    return metadata
+       
     def _find_message_elements(self, soup: BeautifulSoup):
         """
         Find message wrapper elements.
