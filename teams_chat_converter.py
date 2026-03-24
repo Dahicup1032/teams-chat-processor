@@ -66,15 +66,32 @@ class TeamsChatConverter:
     # =========================
     # PARTICIPANTS (RECIPIENT FIX)
     # =========================
-    def _extract_participants(self, soup) -> str:
+	def _extract_participants(self, soup) -> str:
+    """
+    Extract only participant names from the 'Display names' row.
+    """
+    for row in soup.find_all("tr"):
+        label_cell = row.find("td", class_="chat-label")
+        if not label_cell:
+            continue
 
-        names = []
-        for td in soup.find_all("td", class_="chat-data"):
-            text = td.get_text(strip=True)
-            if text and not text.lower().startswith("user count"):
-                names.append(text)
+        label = label_cell.get_text(" ", strip=True).lower()
+        if label != "display names":
+            continue
 
-        return "; ".join(names)
+        data_cell = row.find("td", class_="chat-data")
+        if not data_cell:
+            return ""
+
+        nested = data_cell.find_all("div", class_="chat-data")
+        if nested:
+            names = [n.get_text(" ", strip=True) for n in nested if n.get_text(" ", strip=True)]
+            return "; ".join(names)
+
+        text = data_cell.get_text(" ", strip=True)
+        return text if text else ""
+
+    return ""
 
     # =========================
     # MESSAGE FINDER (FIXED)
@@ -90,19 +107,22 @@ class TeamsChatConverter:
     # MESSAGE EXTRACTION
     # =========================
     def _extract_message(self, element, idx, participants):
+		sender = element.find(class_="message-sender")
+		text = element.find(class_="message-text")
+		time = element.find(class_="message-date")
 
-        sender = element.find("div", class_="message-sender")
-        text = element.find("div", class_="message-text")
-        time = element.find("div", class_="message-date")
-
-        return {
-            "index": idx,
-            "timestamp": time.get_text(strip=True) if time else "",
-            "sender": sender.get_text(strip=True) if sender else "Unknown",
-            "recipient": participants,
-            "message": text.get_text(" ", strip=True) if text else "",
-            "message_hash": self._hash(idx, sender, text),
-        }
+		return {
+			"index": idx,
+			"timestamp": time.get_text(strip=True) if time else "",
+			"sender": sender.get_text(strip=True) if sender else "Unknown",
+			"recipient": participants,
+			"message": text.get_text(" ", strip=True) if text else "",
+			"message_hash": self._hash(
+				idx,
+				sender.get_text(strip=True) if sender else "Unknown",
+				text.get_text(" ", strip=True) if text else "",
+			),
+		}
 
     def _hash(self, idx, sender, text):
         raw = f"{idx}{sender}{text}".encode()
