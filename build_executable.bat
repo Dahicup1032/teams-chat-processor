@@ -1,4 +1,6 @@
 @echo off
+cd /d "%~dp0"
+
 echo ========================================
 echo Teams Chat Converter - Build Script
 echo ========================================
