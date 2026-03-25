@@ -4,24 +4,22 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import re
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 import hashlib
 
 
 class TeamsChatConverter:
     """
-    Stable Purview Teams HTML parser.
+    Purview Teams HTML -> Excel parser.
 
     Supports:
-    - Display names -> recipient/group context
+    - Display names row for conversation participants
     - unknown-direction-message-wrapper message blocks
-    - message-sender
-    - message-date
-    - message-text
+    - message-sender / message-date / message-text
     - dynamic message_id extraction from id="message###"
     - duplicate removal
-    - timestamp drift detection
-    - Excel output
+    - timestamp parsing + drift detection
+    - metadata preservation for timezone validation
     """
 
     def __init__(self, html_file: str, output_dir: str = None):
@@ -40,7 +38,7 @@ class TeamsChatConverter:
         }
 
     def _setup_logging(self):
-        self.logger = logging.getLogger(str(self.html_file))
+        self.logger = logging.getLogger(f"{self.html_file}_{id(self)}")
         self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
 
@@ -55,19 +53,20 @@ class TeamsChatConverter:
         self.logger.addHandler(fh)
         self.logger.addHandler(sh)
 
+    # =========================
+    # PARSE
+    # =========================
     def parse_html(self) -> pd.DataFrame:
         with open(self.html_file, "r", encoding="utf-8") as f:
             soup = BeautifulSoup(f.read(), "html.parser")
 
-        participants = self._extract_participants(soup)
-        messages = soup.find_all("label", class_="unknown-direction-message-wrapper")
-
-        self.logger.info(f"Found {len(messages)} message elements")
+        metadata = self._extract_chat_metadata(soup)
+        messages = self._find_message_elements(soup)
 
         rows = []
         for i, element in enumerate(messages, 1):
             try:
-                row = self._extract_message(element, i, participants)
+                row = self._extract_message_data(element, i, metadata)
                 if row:
                     rows.append(row)
             except Exception as e:
@@ -78,37 +77,111 @@ class TeamsChatConverter:
         self.logger.info(f"Extracted {len(rows)} messages")
         return pd.DataFrame(rows)
 
-    def _extract_participants(self, soup) -> str:
-        """
-        Extract only participant names from the 'Display names' row.
-        """
-        for row in soup.find_all("tr"):
-            label = row.find("td", class_="chat-label")
-            if not label:
-                continue
+    # =========================
+    # METADATA
+    # =========================
+    def _extract_chat_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
+        metadata = {
+            "conversation_participants": "",
+            "participant_count": "",
+            "local_user": "",
+            "message_count": "",
+            "conversation_first_timestamp": "",
+            "conversation_last_timestamp": "",
+            "case_time_zone": "",
+        }
 
-            if label.get_text(" ", strip=True).lower() != "display names":
-                continue
+        try:
+            for row in soup.find_all("tr"):
+                label_cell = row.find("td", class_=re.compile(r"chat-label|chat-header", re.I))
+                if not label_cell:
+                    continue
 
-            data = row.find("td", class_="chat-data")
-            if not data:
-                return ""
+                key = label_cell.get_text(" ", strip=True).lower()
+                data_cells = row.find_all("td", class_="chat-data")
+                if not data_cells:
+                    continue
 
-            nested = data.find_all("div", class_="chat-data")
-            if nested:
-                names = [n.get_text(" ", strip=True) for n in nested if n.get_text(" ", strip=True)]
-                return "; ".join(names)
+                if key == "display names":
+                    nested_names = data_cells[0].find_all("div", class_="chat-data")
+                    if nested_names:
+                        values = [n.get_text(" ", strip=True) for n in nested_names if n.get_text(" ", strip=True)]
+                    else:
+                        values = [data_cells[0].get_text(" ", strip=True)] if data_cells[0].get_text(" ", strip=True) else []
 
-            text = data.get_text(" ", strip=True)
-            return text if text else ""
+                    if values:
+                        metadata["conversation_participants"] = "; ".join(values)
 
-        return ""
+                elif "number of participants" in key:
+                    metadata["participant_count"] = data_cells[0].get_text(" ", strip=True)
+
+                elif "local user" in key or "local participant" in key:
+                    metadata["local_user"] = data_cells[0].get_text(" ", strip=True)
+
+                elif "number of messages" in key:
+                    metadata["message_count"] = data_cells[0].get_text(" ", strip=True)
+
+                elif "first message sent" in key:
+                    metadata["conversation_first_timestamp"] = data_cells[0].get_text(" ", strip=True)
+
+                elif "last message sent" in key:
+                    metadata["conversation_last_timestamp"] = data_cells[0].get_text(" ", strip=True)
+
+                elif "case time zone" in key:
+                    metadata["case_time_zone"] = data_cells[0].get_text(" ", strip=True)
+
+        except Exception as e:
+            self.logger.warning(f"Metadata extraction failed: {e}")
+
+        return metadata
+
+    # =========================
+    # MESSAGE FINDER
+    # =========================
+    def _find_message_elements(self, soup: BeautifulSoup):
+        messages = soup.find_all("label", class_="unknown-direction-message-wrapper")
+        self.logger.info(f"Found {len(messages)} message elements")
+        return messages
+
+    # =========================
+    # MESSAGE EXTRACTION
+    # =========================
+    def _extract_message_data(self, element, index: int, metadata: Dict[str, str]):
+        message_id = self._extract_message_id(element)
+        raw_timestamp = self._extract_raw_timestamp(element)
+        parsed_timestamp = self._parse_timestamp(raw_timestamp)
+
+        sender = element.find(class_="message-sender")
+        text = element.find(class_="message-text")
+
+        sender_text = sender.get_text(" ", strip=True) if sender else "Unknown"
+        message_text = text.get_text(" ", strip=True) if text else ""
+
+        if not any([message_id, raw_timestamp, sender_text, message_text]):
+            return None
+
+        return {
+            "index": index,
+            "message_id": message_id,
+            "raw_timestamp": raw_timestamp if raw_timestamp else "",
+            "timestamp": raw_timestamp if raw_timestamp else "",
+            "parsed_timestamp": parsed_timestamp,
+            "timestamp_parse_status": "OK" if parsed_timestamp is not None else "FAILED",
+            "sender": sender_text,
+            "recipient": metadata.get("conversation_participants", ""),
+            "message": message_text,
+            "conversation_participants": metadata.get("conversation_participants", ""),
+            "participant_count": metadata.get("participant_count", ""),
+            "local_user": metadata.get("local_user", ""),
+            "message_count": metadata.get("message_count", ""),
+            "conversation_first_timestamp": metadata.get("conversation_first_timestamp", ""),
+            "conversation_last_timestamp": metadata.get("conversation_last_timestamp", ""),
+            "case_time_zone": metadata.get("case_time_zone", ""),
+            "source_file": self.html_file.name,
+            "message_hash": self._generate_hash(message_id, raw_timestamp, sender_text, message_text),
+        }
 
     def _extract_message_id(self, element) -> str:
-        """
-        Extract numeric id from id="message339" -> "339"
-        Fully dynamic, nothing hardcoded.
-        """
         raw_id = element.get("id", "")
         if not raw_id:
             nested = element.find(attrs={"id": True})
@@ -124,33 +197,27 @@ class TeamsChatConverter:
 
         return raw_id
 
-    def _extract_message(self, element, idx: int, participants: str):
-        sender = element.find(class_="message-sender")
-        text = element.find(class_="message-text")
-        time = element.find(class_="message-date")
+    def _extract_raw_timestamp(self, element) -> str:
+        found = element.find(class_="message-date")
+        if found:
+            return found.get_text(" ", strip=True)
+        return ""
 
-        sender_text = sender.get_text(" ", strip=True) if sender else "Unknown"
-        message_text = text.get_text(" ", strip=True) if text else ""
-        timestamp_text = time.get_text(" ", strip=True) if time else ""
-        message_id = self._extract_message_id(element)
-
-        if not any([sender_text, message_text, timestamp_text, message_id]):
+    def _parse_timestamp(self, raw_timestamp: str):
+        if not raw_timestamp:
+            return None
+        try:
+            return pd.to_datetime(raw_timestamp, errors="raise")
+        except Exception:
             return None
 
-        return {
-            "index": idx,
-            "message_id": message_id,
-            "timestamp": timestamp_text,
-            "sender": sender_text,
-            "recipient": participants,
-            "message": message_text,
-            "message_hash": self._hash(message_id, timestamp_text, sender_text, message_text),
-        }
-
-    def _hash(self, message_id: str, timestamp: str, sender: str, message: str) -> str:
-        raw = f"{message_id}|{timestamp}|{sender}|{message}".encode("utf-8")
+    def _generate_hash(self, message_id: str, raw_timestamp: str, sender: str, message: str) -> str:
+        raw = f"{message_id}|{raw_timestamp}|{sender}|{message}".encode("utf-8")
         return hashlib.md5(raw).hexdigest()
 
+    # =========================
+    # DUPES + DRIFT
+    # =========================
     def remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty or "message_hash" not in df.columns:
             return df
@@ -163,40 +230,31 @@ class TeamsChatConverter:
         return df
 
     def check_timestamp_drift(self, df: pd.DataFrame, threshold_seconds: int = 300) -> pd.DataFrame:
-        """
-        Flag:
-        - unparseable timestamps
-        - backward movement
-        - unusually large jumps
-        """
         if df.empty:
-            df["parsed_timestamp"] = pd.NaT
             df["timestamp_drift_flag"] = False
             df["timestamp_drift_detail"] = ""
             df["timestamp_drift_seconds"] = ""
             return df
 
         df = df.copy()
-        df["parsed_timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
         df["timestamp_drift_flag"] = False
         df["timestamp_drift_detail"] = ""
         df["timestamp_drift_seconds"] = ""
 
-        prev = None
+        previous_ts = None
 
         for idx in df.index:
-            current = df.at[idx, "parsed_timestamp"]
-            raw = df.at[idx, "timestamp"]
+            current_ts = df.at[idx, "parsed_timestamp"]
 
-            if pd.isna(current):
+            if pd.isna(current_ts) or current_ts is None:
                 df.at[idx, "timestamp_drift_flag"] = True
                 df.at[idx, "timestamp_drift_detail"] = "Unparseable timestamp"
+                df.at[idx, "timestamp_drift_seconds"] = ""
                 self.stats["timestamp_drifts"] += 1
-                self.logger.warning(f"Row {idx}: unparseable timestamp -> {raw}")
                 continue
 
-            if prev is not None:
-                delta = (current - prev).total_seconds()
+            if previous_ts is not None:
+                delta = (current_ts - previous_ts).total_seconds()
 
                 if delta < 0:
                     df.at[idx, "timestamp_drift_flag"] = True
@@ -210,11 +268,14 @@ class TeamsChatConverter:
                     df.at[idx, "timestamp_drift_seconds"] = int(delta)
                     self.stats["timestamp_drifts"] += 1
 
-            prev = current
+            previous_ts = current_ts
 
         self.logger.info(f"Detected {self.stats['timestamp_drifts']} timestamp drift issues")
         return df
 
+    # =========================
+    # SAVE
+    # =========================
     def save_to_excel(self, df: pd.DataFrame, output_file: str = None) -> Path:
         if output_file:
             output_path = Path(output_file)
@@ -234,19 +295,29 @@ class TeamsChatConverter:
         preferred_columns = [
             "index",
             "message_id",
+            "raw_timestamp",
             "timestamp",
             "parsed_timestamp",
+            "timestamp_parse_status",
             "timestamp_drift_flag",
             "timestamp_drift_detail",
             "timestamp_drift_seconds",
             "sender",
             "recipient",
             "message",
+            "conversation_participants",
+            "participant_count",
+            "local_user",
+            "message_count",
+            "conversation_first_timestamp",
+            "conversation_last_timestamp",
+            "case_time_zone",
+            "source_file",
             "message_hash",
         ]
 
-        existing = [c for c in preferred_columns if c in export_df.columns]
-        export_df = export_df[existing]
+        existing_columns = [c for c in preferred_columns if c in export_df.columns]
+        export_df = export_df[existing_columns]
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             export_df.to_excel(writer, index=False, sheet_name="Messages")
@@ -264,15 +335,23 @@ class TeamsChatConverter:
         return output_path
 
 
+# =========================
+# SINGLE FILE
+# =========================
 def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str]:
     converter = TeamsChatConverter(html_file, output_dir)
+
     df = converter.parse_html()
     df = converter.remove_duplicates(df)
     df = converter.check_timestamp_drift(df)
+
     excel_file = converter.save_to_excel(df)
     return str(excel_file), str(converter.log_file)
 
 
+# =========================
+# FOLDER MODE
+# =========================
 def _iter_html_files(input_path: str, recursive: bool = False) -> List[Path]:
     p = Path(input_path).expanduser().resolve()
 
@@ -282,8 +361,11 @@ def _iter_html_files(input_path: str, recursive: bool = False) -> List[Path]:
         return [p]
 
     if p.is_dir():
-        pattern = "**/*.html" if recursive else "*.html"
-        files = sorted([f for f in p.glob(pattern) if f.is_file()])
+        patterns = ["**/*.html", "**/*.htm"] if recursive else ["*.html", "*.htm"]
+        files = []
+        for pattern in patterns:
+            files.extend([f for f in p.glob(pattern) if f.is_file()])
+        files = sorted(set(files))
         if not files:
             raise FileNotFoundError(f"No HTML files found in folder: {p}")
         return files
@@ -310,7 +392,6 @@ def convert_teams_chat_folder(
         return last_excel, last_log
 
     dfs = []
-
     for f in html_files:
         c = TeamsChatConverter(str(f), output_dir)
         df = c.parse_html()
@@ -351,8 +432,10 @@ def convert_teams_chat_folder(
         "global_sequence",
         "index",
         "message_id",
+        "raw_timestamp",
         "timestamp",
         "parsed_timestamp",
+        "timestamp_parse_status",
         "timestamp_drift_flag",
         "timestamp_drift_detail",
         "timestamp_drift_seconds",
@@ -362,8 +445,8 @@ def convert_teams_chat_folder(
         "source_file",
         "message_hash",
     ]
-    existing = [c for c in preferred_columns if c in export_df.columns]
-    export_df = export_df[existing]
+    existing_columns = [c for c in preferred_columns if c in export_df.columns]
+    export_df = export_df[existing_columns]
 
     with pd.ExcelWriter(combined_file, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="All Messages")
