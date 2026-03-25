@@ -21,11 +21,11 @@ echo.
 echo Cleaning previous build...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-if exist TeamsChartConverter.spec del TeamsChartConverter.spec
+if exist TeamsChatConverter.spec del TeamsChatConverter.spec
 
 echo.
 echo Building executable...
-python -m PyInstaller --name=TeamsChartConverter --onefile --windowed --add-data="teams_chat_converter.py;." --hidden-import=bs4 --hidden-import=openpyxl --clean --noconfirm teams_chat_converter_gui.py
+python -m PyInstaller --name=TeamsChatConverter --onefile --windowed --add-data="teams_chat_converter.py;." --hidden-import=bs4 --hidden-import=openpyxl --clean --noconfirm teams_chat_converter_gui.py
 
 if errorlevel 1 (
     echo.
@@ -39,8 +39,8 @@ echo ========================================
 echo BUILD COMPLETE!
 echo ========================================
 echo.
-echo Executable location: dist\TeamsChartConverter.exe
+echo Executable location: dist\TeamsChatConverter.exe
 echo.
-echo You can now run: dist\TeamsChartConverter.exe
+echo You can now run: dist\TeamsChatConverter.exe
 echo.
 pause
