@@ -3,8 +3,7 @@ from bs4 import BeautifulSoup
 from pathlib import Path
 from datetime import datetime
 import logging
-import re
-from typing import List, Dict, Optional, Tuple
+from typing import Tuple
 import hashlib
 
 
@@ -17,15 +16,6 @@ class TeamsChatConverter:
 
         self.log_file = self.output_dir / f"{self.html_file.stem}_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         self._setup_logging()
-
-        self.stats = {
-            "total_messages": 0,
-            "duplicates_removed": 0,
-            "timestamp_drifts": 0,
-            "errors": 0,
-            "urls_extracted": 0,
-            "attachments_found": 0,
-        }
 
     def _setup_logging(self):
         self.logger = logging.getLogger(str(self.html_file))
@@ -52,124 +42,87 @@ class TeamsChatConverter:
             soup = BeautifulSoup(f.read(), "html.parser")
 
         participants = self._extract_participants(soup)
-        messages = self._find_message_elements(soup)
+        messages = soup.find_all("label", class_="unknown-direction-message-wrapper")
+
+        self.logger.info(f"Found {len(messages)} message elements")
 
         rows = []
         for i, m in enumerate(messages, 1):
-            row = self._extract_message(m, i, participants)
-            if row:
-                rows.append(row)
+            sender = m.find(class_="message-sender")
+            text = m.find(class_="message-text")
+            time = m.find(class_="message-date")
+
+            row = {
+                "index": i,
+                "timestamp": time.get_text(strip=True) if time else "",
+                "sender": sender.get_text(strip=True) if sender else "Unknown",
+                "recipient": participants,
+                "message": text.get_text(" ", strip=True) if text else "",
+            }
+
+            row["message_hash"] = hashlib.md5(
+                f"{row['index']}{row['sender']}{row['message']}".encode()
+            ).hexdigest()
+
+            rows.append(row)
 
         self.logger.info(f"Extracted {len(rows)} messages")
         return pd.DataFrame(rows)
 
     # =========================
-    # PARTICIPANTS (RECIPIENT FIX)
+    # PARTICIPANTS FIX
     # =========================
-	def _extract_participants(self, soup) -> str:
-    """
-    Extract only participant names from the 'Display names' row.
-    """
-    for row in soup.find_all("tr"):
-        label_cell = row.find("td", class_="chat-label")
-        if not label_cell:
-            continue
+    def _extract_participants(self, soup) -> str:
+        for row in soup.find_all("tr"):
+            label = row.find("td", class_="chat-label")
+            if not label:
+                continue
 
-        label = label_cell.get_text(" ", strip=True).lower()
-        if label != "display names":
-            continue
+            if label.get_text(strip=True).lower() != "display names":
+                continue
 
-        data_cell = row.find("td", class_="chat-data")
-        if not data_cell:
-            return ""
+            data = row.find("td", class_="chat-data")
+            if not data:
+                return ""
 
-        nested = data_cell.find_all("div", class_="chat-data")
-        if nested:
-            names = [n.get_text(" ", strip=True) for n in nested if n.get_text(" ", strip=True)]
-            return "; ".join(names)
+            nested = data.find_all("div", class_="chat-data")
 
-        text = data_cell.get_text(" ", strip=True)
-        return text if text else ""
+            if nested:
+                names = [n.get_text(strip=True) for n in nested if n.get_text(strip=True)]
+                return "; ".join(names)
 
-    return ""
+            return data.get_text(strip=True)
+
+        return ""
 
     # =========================
-    # MESSAGE FINDER (FIXED)
-    # =========================
-    def _find_message_elements(self, soup):
-
-        msgs = soup.find_all("label", class_="unknown-direction-message-wrapper")
-
-        self.logger.info(f"Found {len(msgs)} message elements")
-        return msgs
-
-    # =========================
-    # MESSAGE EXTRACTION
-    # =========================
-    def _extract_message(self, element, idx, participants):
-		sender = element.find(class_="message-sender")
-		text = element.find(class_="message-text")
-		time = element.find(class_="message-date")
-
-		return {
-			"index": idx,
-			"timestamp": time.get_text(strip=True) if time else "",
-			"sender": sender.get_text(strip=True) if sender else "Unknown",
-			"recipient": participants,
-			"message": text.get_text(" ", strip=True) if text else "",
-			"message_hash": self._hash(
-				idx,
-				sender.get_text(strip=True) if sender else "Unknown",
-				text.get_text(" ", strip=True) if text else "",
-			),
-		}
-
-    def _hash(self, idx, sender, text):
-        raw = f"{idx}{sender}{text}".encode()
-        return hashlib.md5(raw).hexdigest()
-
-    # =========================
-    # CLEANUP
-    # =========================
-    def remove_duplicates(self, df):
-        if "message_hash" not in df:
-            return df
-        return df.drop_duplicates("message_hash").reset_index(drop=True)
-
-    def check_timestamp_drift(self, df):
-        return df
-
-    # =========================
-    # SAVE (FIXED TIMESTAMP BUG)
+    # SAVE
     # =========================
     def save_to_excel(self, df):
 
-        out = self.output_dir / f"{self.html_file.stem}_parsed.xlsx"
+        output_file = self.output_dir / f"{self.html_file.stem}_parsed.xlsx"
 
-        # FIX: safe timestamp conversion
+        # SAFE timestamp conversion (no crash)
         if "timestamp" in df.columns:
             ts = pd.to_datetime(df["timestamp"], errors="coerce")
             df["timestamp"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S")
             df["timestamp"] = df["timestamp"].fillna("")
 
-        df.to_excel(out, index=False)
+        df.to_excel(output_file, index=False)
 
-        self.logger.info(f"Saved: {out}")
-        return out
+        self.logger.info(f"Saved: {output_file}")
+        return output_file
 
 
 # =========================
-# ENTRY FUNCTION
+# ENTRY POINT
 # =========================
 def convert_teams_chat(html_file: str, output_dir: str = None) -> Tuple[str, str]:
 
-    c = TeamsChatConverter(html_file, output_dir)
+    converter = TeamsChatConverter(html_file, output_dir)
 
-    df = c.parse_html()
+    df = converter.parse_html()
 
-    df = c.remove_duplicates(df)
-    df = c.check_timestamp_drift(df)
+    excel_file = converter.save_to_excel(df)
 
-    excel = c.save_to_excel(df)
-
-    return str(excel), str(c.log_file)
+    return str(excel_file), str(converter.log_file)
