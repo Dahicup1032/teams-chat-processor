@@ -10,10 +10,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
 
 try:
-    from teams_chat_converter import TeamsChatConverter
+    from teams_chat_converter import convert_teams_chat, convert_teams_chat_folder
 except ImportError:  # pragma: no cover
     import teams_chat_converter  # type: ignore
-    TeamsChatConverter = teams_chat_converter.TeamsChatConverter  # type: ignore
+    convert_teams_chat = teams_chat_converter.convert_teams_chat  # type: ignore
+    convert_teams_chat_folder = teams_chat_converter.convert_teams_chat_folder  # type: ignore
 
 
 class ConverterGUI:
@@ -45,8 +46,7 @@ class ConverterGUI:
             self.root,
             text=(
                 "Select either a single Purview HTML export file or a folder of HTML files. "
-                "The converter extracts message IDs, sender, timestamps, message text, "
-                "conversation participants, URLs, attachments, and timestamp drift results."
+                "Single file mode creates one Excel workbook. Folder mode creates one combined Excel workbook."
             ),
             font=("Arial", 10),
             pady=5,
@@ -205,14 +205,13 @@ class ConverterGUI:
             self.log_message(f"ERROR: Path not found: {path}")
             return
 
-        if self.mode_var.get() == "file":
-            if path.suffix.lower() not in [".html", ".htm"]:
-                response = messagebox.askyesno(
-                    "Non-HTML File",
-                    "This does not appear to be an HTML file.\nContinue anyway?",
-                )
-                if not response:
-                    return
+        if self.mode_var.get() == "file" and path.suffix.lower() not in [".html", ".htm"]:
+            response = messagebox.askyesno(
+                "Non-HTML File",
+                "This does not appear to be an HTML file.\nContinue anyway?",
+            )
+            if not response:
+                return
 
         self.selected_path = path
         self.path_display.config(
@@ -221,19 +220,6 @@ class ConverterGUI:
         )
         self.convert_button.config(state=tk.NORMAL)
         self.log_message(f"Input selected: {path}")
-
-    def iter_html_files(self, input_path: Path, recursive: bool):
-        if input_path.is_file():
-            if input_path.suffix.lower() in {".html", ".htm"}:
-                return [input_path]
-            return []
-
-        patterns = ["*.html", "*.htm"]
-        files = []
-        for pat in patterns:
-            files.extend(input_path.rglob(pat) if recursive else input_path.glob(pat))
-
-        return sorted({p.resolve() for p in files})
 
     def log_message(self, message: str):
         self.status_text.config(state=tk.NORMAL)
@@ -257,136 +243,45 @@ class ConverterGUI:
 
         thread = threading.Thread(target=self.run_conversion, daemon=True)
         thread.start()
-   
+
     def run_conversion(self):
         try:
-            import pandas as pd
-
             input_path = self.selected_path
-            output_dir = self.output_dir
+            output_dir = str(self.output_dir) if self.output_dir else None
 
             if input_path is None:
                 raise ValueError("No input selected.")
 
-            html_files = self.iter_html_files(
-                input_path,
-                recursive=self.recursive_var.get() if self.mode_var.get() == "folder" else False,
-            )
-
-            if not html_files:
-                raise FileNotFoundError(f"No .html/.htm files found under: {input_path}")
-
-            self.log_message(f"Found {len(html_files)} HTML file(s) to process.")
-
             results = []
             failures = []
 
-            # SINGLE FILE MODE = keep existing one-file behavior
             if self.mode_var.get() == "file":
-                html_file = html_files[0]
-                try:
-                    effective_output = output_dir if output_dir else html_file.parent
-                    converter = TeamsChatConverter(str(html_file), str(effective_output))
+                self.log_message(f"Processing single file: {input_path.name}")
+                excel_file, log_file = convert_teams_chat(
+                    str(input_path),
+                    output_dir=output_dir,
+                )
+                self.log_message(f"✓ Excel file created: {Path(excel_file).name}")
+                self.log_message(f"✓ Log file: {Path(log_file).name}")
+                results.append(str(excel_file))
 
-                    self.log_message(f"\n--- Processing: {html_file.name} ---")
-                    self.log_message("Parsing HTML...")
-                    df = converter.parse_html()
-                    self.log_message(f"✓ Extracted {len(df)} message rows")
-
-                    self.log_message("Checking for duplicates...")
-                    df = converter.remove_duplicates(df)
-                    self.log_message(f"✓ Removed {converter.stats['duplicates_removed']} duplicates")
-
-                    self.log_message("Checking timestamp drift...")
-                    df = converter.check_timestamp_drift(df)
-                    self.log_message(f"✓ Detected {converter.stats['timestamp_drifts']} timestamp drifts")
-
-                    self.log_message("Saving to Excel...")
-                    excel_file = converter.save_to_excel(df)
-
-                    self.log_message(f"✓ Excel file created: {Path(excel_file).name}")
-                    self.log_message(f"  URLs extracted: {converter.stats['urls_extracted']}")
-                    self.log_message(f"  Attachments found: {converter.stats['attachments_found']}")
-                    self.log_message(f"  Log file: {converter.log_file}")
-
-                    results.append(str(excel_file))
-
-                except Exception as e:
-                    msg = f"{html_file.name}: {e}"
-                    failures.append(msg)
-                    self.log_message(f"ERROR: {msg}")
-
-            # FOLDER MODE = combine all HTMLs into one Excel
             else:
-                all_dfs = []
-                total_dupes = 0
-                total_drifts = 0
-                total_urls = 0
-                total_attachments = 0
-
-                effective_output = output_dir if output_dir else input_path
-
-                for html_file in html_files:
-                    try:
-                        converter = TeamsChatConverter(str(html_file), str(effective_output))
-
-                        self.log_message(f"\n--- Processing: {html_file.name} ---")
-                        self.log_message("Parsing HTML...")
-                        df = converter.parse_html()
-                        self.log_message(f"✓ Extracted {len(df)} message rows")
-
-                        self.log_message("Checking for duplicates...")
-                        df = converter.remove_duplicates(df)
-                        self.log_message(f"✓ Removed {converter.stats['duplicates_removed']} duplicates")
-
-                        self.log_message("Checking timestamp drift...")
-                        df = converter.check_timestamp_drift(df)
-                        self.log_message(f"✓ Detected {converter.stats['timestamp_drifts']} timestamp drifts")
-
-                        all_dfs.append(df)
-
-                        total_dupes += converter.stats.get("duplicates_removed", 0)
-                        total_drifts += converter.stats.get("timestamp_drifts", 0)
-                        total_urls += converter.stats.get("urls_extracted", 0)
-                        total_attachments += converter.stats.get("attachments_found", 0)
-
-                    except Exception as e:
-                        msg = f"{html_file.name}: {e}"
-                        failures.append(msg)
-                        self.log_message(f"ERROR: {msg}")
-
-                if all_dfs:
-                    self.log_message("\nCombining all parsed rows into one Excel file...")
-                    combined_df = pd.concat(all_dfs, ignore_index=True)
-
-                    combined_name = "combined_teams_chat_output.xlsx"
-                    combined_path = Path(effective_output) / combined_name
-
-                    with pd.ExcelWriter(combined_path, engine="openpyxl") as writer:
-                        combined_df.to_excel(writer, index=False, sheet_name="Messages")
-
-                        summary_df = pd.DataFrame([
-                            {"Metric": "Source Folder", "Value": str(input_path)},
-                            {"Metric": "Files Processed", "Value": len(all_dfs)},
-                            {"Metric": "Combined Rows", "Value": len(combined_df)},
-                            {"Metric": "Duplicates Removed", "Value": total_dupes},
-                            {"Metric": "Timestamp Drifts", "Value": total_drifts},
-                            {"Metric": "URLs Extracted", "Value": total_urls},
-                            {"Metric": "Attachments Found", "Value": total_attachments},
-                        ])
-                        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-
-                    self.log_message(f"✓ Combined Excel file created: {combined_path.name}")
-                    results.append(str(combined_path))
+                self.log_message(f"Processing folder: {input_path}")
+                self.log_message("Combining all HTML files into one Excel workbook...")
+                excel_file, log_file = convert_teams_chat_folder(
+                    str(input_path),
+                    output_dir=output_dir,
+                    recursive=self.recursive_var.get(),
+                    combine=True,
+                )
+                self.log_message(f"✓ Combined Excel file created: {Path(excel_file).name}")
+                self.log_message(f"✓ Log file: {Path(log_file).name}")
+                results.append(str(excel_file))
 
             self.log_message("\n" + "=" * 70)
             self.log_message("CONVERSION COMPLETE")
             self.log_message(f"Successful: {len(results)}")
             self.log_message(f"Failed: {len(failures)}")
-            if failures:
-                self.log_message("Failures:")
-                for failure in failures:
-                    self.log_message(f" - {failure}")
             self.log_message("=" * 70)
 
             self.root.after(0, lambda: self.show_completion_dialog(results, failures))
@@ -399,7 +294,7 @@ class ConverterGUI:
             self.root.after(0, lambda: messagebox.showerror("Conversion Failed", error_msg))
         finally:
             self.root.after(0, self.reset_ui)
-    
+
     def show_completion_dialog(self, results, failures):
         if results and not failures:
             message = (
