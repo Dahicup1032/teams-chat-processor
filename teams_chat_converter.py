@@ -452,8 +452,13 @@ def convert_teams_chat_folder(
         export_df.to_excel(writer, index=False, sheet_name="All Messages")
 
         summary = pd.DataFrame(
-            [{"source_file": d["source_file"].iloc[0], "messages": len(d)} for d in dfs]
-        )
+            [{"[
+    {
+        "source_file": d["source_file"].iloc[0] if (d is not None and not d.empty and "source_file" in d.columns) else "empty_or_failed_parse",
+        "messages": len(d) if d is not None else 0
+    }
+    for d in dfs if d is not None
+])
         summary.to_excel(writer, index=False, sheet_name="Input Summary")
 
     master.logger.info(f"Saved combined workbook: {combined_file}")
