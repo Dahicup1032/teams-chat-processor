@@ -12,6 +12,63 @@ This tool supports:
 
 ---
 
+## Requirements
+
+Install dependencies before running:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Usage (recommended)
+
+Use `run_converter_test.py` as the primary runner. It accepts command-line arguments so no file editing is needed.
+All HTML files in the folder are always combined into a single Excel workbook.
+
+### Convert a folder (combines all HTML files into one Excel workbook)
+
+```bash
+python run_converter_test.py path/to/exports
+```
+
+### Convert a folder recursively (include sub-folders)
+
+```bash
+python run_converter_test.py path/to/exports -r
+```
+
+### Specify an output directory
+
+```bash
+python run_converter_test.py path/to/exports -o path/to/output
+```
+
+### All options
+
+```
+positional arguments:
+  input_folder          Path to the folder containing Teams chat HTML files.
+
+optional arguments:
+  -o, --output-dir      Directory where output files are written. Defaults to the input folder.
+  -r, --recursive       Search for HTML files recursively in sub-folders.
+```
+
+### Alternative: built-in converter CLI
+
+`teams_chat_converter.py` also has its own `__main__` entrypoint and can be called directly:
+
+```bash
+python teams_chat_converter.py path/to/exports
+python teams_chat_converter.py path/to/exports -r -o path/to/output
+```
+
+For most workflows, `run_converter_test.py` is the recommended entry point.
+
+---
+
 ## Features
 
 - Converts Purview Teams HTML exports into Excel
