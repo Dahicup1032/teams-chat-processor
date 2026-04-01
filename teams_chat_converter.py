@@ -282,8 +282,12 @@ class TeamsChatConverter:
         if not raw_timestamp:
             return None
         try:
-            return pd.to_datetime(raw_timestamp, errors="raise")
-        except Exception:
+            parsed_datetime = pd.to_datetime(raw_timestamp, errors="raise")
+            formatted = parsed_datetime.strftime("%m/%d/%y %I:%M:%S.%f %p")
+            # Clip microseconds (6 digits) to milliseconds (3 digits), preserve AM/PM
+            return formatted[:-6] + formatted[-3:]
+        except Exception as e:
+            self.logger.warning(f"Failed to parse timestamp {raw_timestamp}: {e}")
             return None
 
     def _generate_hash(self, message_id: str, raw_timestamp: str, sender: str, message: str) -> str:
