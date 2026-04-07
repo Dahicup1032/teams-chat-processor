@@ -549,4 +549,8 @@ if __name__ == "__main__":
         excel_file, log_file = convert_teams_chat(args.input_path, output_dir=args.output_dir)
 
     print(f"Excel Output: {excel_file}")
+<<<<<<< Updated upstream
     print(f"Log File: {log_file}")
+=======
+    print(f"Log File: {log_file}")
+>>>>>>> Stashed changes
