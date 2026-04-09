@@ -282,8 +282,12 @@ class TeamsChatConverter:
         if not raw_timestamp:
             return None
         try:
-            return pd.to_datetime(raw_timestamp, errors="raise")
-        except Exception:
+            parsed_datetime = pd.to_datetime(raw_timestamp, errors="raise")
+            formatted = parsed_datetime.strftime("%m/%d/%y %I:%M:%S.%f %p")
+            # Clip microseconds (6 digits) to milliseconds (3 digits), preserve AM/PM
+            return formatted[:-6] + formatted[-3:]
+        except Exception as e:
+            self.logger.warning(f"Failed to parse timestamp {raw_timestamp}: {e}")
             return None
 
     def _generate_hash(self, message_id: str, raw_timestamp: str, sender: str, message: str) -> str:
@@ -347,8 +351,7 @@ class TeamsChatConverter:
         export_df = df.copy()
 
         if "parsed_timestamp" in export_df.columns:
-            ts = pd.to_datetime(export_df["parsed_timestamp"], errors="coerce")
-            export_df["parsed_timestamp"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+            export_df["parsed_timestamp"] = export_df["parsed_timestamp"].fillna("")
 
         if "timestamp" in export_df.columns:
             ts = pd.to_datetime(export_df["timestamp"], errors="coerce")
@@ -474,8 +477,7 @@ def convert_teams_chat_folder(
     export_df = combined.copy()
 
     if "parsed_timestamp" in export_df.columns:
-        ts = pd.to_datetime(export_df["parsed_timestamp"], errors="coerce")
-        export_df["parsed_timestamp"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+        export_df["parsed_timestamp"] = export_df["parsed_timestamp"].fillna("")
 
     if "timestamp" in export_df.columns:
         ts = pd.to_datetime(export_df["timestamp"], errors="coerce")
@@ -534,7 +536,6 @@ if __name__ == "__main__":
     parser.add_argument("input_path", help="Path to HTML file or folder of HTML files")
     parser.add_argument("-o", "--output-dir", default=None, help="Output directory")
     parser.add_argument("-r", "--recursive", action="store_true", help="Search subfolders for HTML files")
-    parser.add_argument("--no-combine", action="store_true", help="Do not combine folder results into one workbook")
 
     args = parser.parse_args()
 
@@ -543,7 +544,7 @@ if __name__ == "__main__":
             args.input_path,
             output_dir=args.output_dir,
             recursive=args.recursive,
-            combine=not args.no_combine,
+            combine=True,
         )
     else:
         excel_file, log_file = convert_teams_chat(args.input_path, output_dir=args.output_dir)
