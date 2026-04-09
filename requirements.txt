@@ -1,3 +1,6 @@
-pandas
-beautifulsoup4
-openpyxl
+numpy==1.24.4
+beautifulsoup4==4.12.2
+lxml==4.9.3
+pandas==2.0.3
+openpyxl==3.1.2
+Aspose.Email-for-Python-via-NET==25.12
