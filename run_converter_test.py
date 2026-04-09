@@ -2,13 +2,12 @@
 CLI Runner for Teams Chat Converter
 
 Usage:
-    python run_converter_test.py <input_folder> [-o OUTPUT_DIR] [-r] [--no-combine]
+    python run_converter_test.py <input_folder> [-o OUTPUT_DIR] [-r]
 
 Examples:
     python run_converter_test.py path/to/exports
     python run_converter_test.py path/to/exports -o path/to/output
     python run_converter_test.py path/to/exports -r
-    python run_converter_test.py path/to/exports --no-combine
 """
 
 import argparse
@@ -19,7 +18,7 @@ from teams_chat_converter import convert_teams_chat_folder
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert Teams chat HTML exports to Excel."
+        description="Convert Teams chat HTML exports to Excel (always combines all files into one workbook)."
     )
     parser.add_argument(
         "input_folder",
@@ -35,11 +34,6 @@ def main():
         action="store_true",
         help="Search for HTML files recursively in sub-folders.",
     )
-    parser.add_argument(
-        "--no-combine",
-        action="store_true",
-        help="Write a separate Excel file per HTML file instead of one combined workbook.",
-    )
 
     args = parser.parse_args()
 
@@ -51,7 +45,7 @@ def main():
             args.input_folder,
             output_dir=args.output_dir,
             recursive=args.recursive,
-            combine=not args.no_combine,
+            combine=True,
         )
 
         print("Conversion complete.")

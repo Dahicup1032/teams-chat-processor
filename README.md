@@ -25,6 +25,7 @@ pip install -r requirements.txt
 ## Usage (recommended)
 
 Use `run_converter_test.py` as the primary runner. It accepts command-line arguments so no file editing is needed.
+All HTML files in the folder are always combined into a single Excel workbook.
 
 ### Convert a folder (combines all HTML files into one Excel workbook)
 
@@ -44,12 +45,6 @@ python run_converter_test.py path/to/exports -r
 python run_converter_test.py path/to/exports -o path/to/output
 ```
 
-### Write one Excel file per HTML file instead of combining
-
-```bash
-python run_converter_test.py path/to/exports --no-combine
-```
-
 ### All options
 
 ```
@@ -59,7 +54,6 @@ positional arguments:
 optional arguments:
   -o, --output-dir      Directory where output files are written. Defaults to the input folder.
   -r, --recursive       Search for HTML files recursively in sub-folders.
-  --no-combine          Write a separate Excel file per HTML file instead of one combined workbook.
 ```
 
 ### Alternative: built-in converter CLI
@@ -69,7 +63,6 @@ optional arguments:
 ```bash
 python teams_chat_converter.py path/to/exports
 python teams_chat_converter.py path/to/exports -r -o path/to/output
-python teams_chat_converter.py path/to/exports --no-combine
 ```
 
 For most workflows, `run_converter_test.py` is the recommended entry point.
