@@ -1,5 +1,5 @@
 from pathlib import Path
-from teams_chat_converter import TeamsChartConverter
+from teams_chat_converter import TeamsChatConverter
 
 # ---- SET YOUR TEST FILE PATH HERE ----
 html_path = Path(r"C:\path\to\your\test_export.html")
@@ -9,7 +9,7 @@ output_dir = None
 # output_dir = r"C:\path\to\output_folder"
 
 # ---- RUN CONVERSION ----
-converter = TeamsChartConverter(str(html_path), output_dir)
+converter = TeamsChatConverter(str(html_path), output_dir)
 
 df = converter.parse_html()
 df = converter.remove_duplicates(df)
