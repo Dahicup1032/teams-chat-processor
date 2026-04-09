@@ -90,6 +90,8 @@ For most workflows, `run_converter_test.py` is the recommended entry point.
   - `message-text`
 
 ---
+#Powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build_executable.ps1
 
 ## Supported HTML Structure
 
